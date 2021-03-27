@@ -1,6 +1,6 @@
-# Reccurent Networks from scratch in Pytorch
+# Reccurent Networks from scratch in PyTorch
 
-## LSTM, RNN and GRU implementations using Pytorch
+## LSTM, RNN and GRU implementations using PyTorch
 
 This repo contains implementations of:
 
