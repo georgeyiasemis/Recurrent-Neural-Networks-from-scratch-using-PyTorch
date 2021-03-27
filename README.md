@@ -1,4 +1,4 @@
-# Reccurent Networks from scratch in PyTorch
+# Reccurent Networks from scratch using PyTorch
 
 ## LSTM, RNN and GRU implementations using PyTorch
 
