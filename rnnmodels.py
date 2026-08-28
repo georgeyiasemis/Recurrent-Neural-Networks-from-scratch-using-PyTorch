@@ -1,224 +1,223 @@
+"""Multi-layer and bidirectional RNN models built from scratch."""
+
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
-from torch.autograd import Variable
-import numpy as np
 
-from rnncells import LSTMCell, GRUCell, RNNCell
+from rnncells import GRUCell, LSTMCell, RNNCell
+
+
+def _make_cell(mode: str, input_size: int, hidden_size: int, bias: bool) -> nn.Module:
+    if mode == "LSTM":
+        return LSTMCell(input_size, hidden_size, bias)
+    if mode == "GRU":
+        return GRUCell(input_size, hidden_size, bias)
+    if mode == "RNN_TANH":
+        return RNNCell(input_size, hidden_size, bias, "tanh")
+    if mode == "RNN_RELU":
+        return RNNCell(input_size, hidden_size, bias, "relu")
+    raise ValueError("Invalid RNN mode selected.")
+
+
+def _init_hidden(
+    num_layers: int,
+    batch_size: int,
+    hidden_size: int,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    return torch.zeros(num_layers, batch_size, hidden_size, device=device, dtype=dtype)
+
 
 class SimpleRNN(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, bias, output_size, activation='tanh'):
-        super(SimpleRNN, self).__init__()
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        num_layers: int,
+        bias: bool,
+        output_size: int,
+        activation: str = "tanh",
+    ) -> None:
+        super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.bias = bias
         self.output_size = output_size
 
-        self.rnn_cell_list = nn.ModuleList()
-
-        if activation == 'tanh':
-            self.rnn_cell_list.append(RNNCell(self.input_size,
-                                                   self.hidden_size,
-                                                   self.bias,
-                                                   "tanh"))
-            for l in range(1, self.num_layers):
-                self.rnn_cell_list.append(RNNCell(self.hidden_size,
-                                                       self.hidden_size,
-                                                       self.bias,
-                                                       "tanh"))
-
-        elif activation == 'relu':
-            self.rnn_cell_list.append(RNNCell(self.input_size,
-                                                   self.hidden_size,
-                                                   self.bias,
-                                                   "relu"))
-            for l in range(1, self.num_layers):
-                self.rnn_cell_list.append(RNNCell(self.hidden_size,
-                                                   self.hidden_size,
-                                                   self.bias,
-                                                   "relu"))
-        else:
+        if activation not in {"tanh", "relu"}:
             raise ValueError("Invalid activation.")
 
-        self.fc = nn.Linear(self.hidden_size, self.output_size)
+        self.rnn_cell_list = nn.ModuleList(
+            [
+                RNNCell(
+                    input_size if layer == 0 else hidden_size,
+                    hidden_size,
+                    bias,
+                    activation,
+                )
+                for layer in range(num_layers)
+            ]
+        )
+        self.fc = nn.Linear(hidden_size, output_size)
 
-
-    def forward(self, input, hx=None):
-
-        # Input of shape (batch_size, seqence length, input_size)
-        #
-        # Output of shape (batch_size, output_size)
-
+    def forward(
+        self,
+        input: torch.Tensor,
+        hx: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if hx is None:
-            if torch.cuda.is_available():
-                h0 = Variable(torch.zeros(self.num_layers, input.size(0), self.hidden_size).cuda())
-            else:
-                h0 = Variable(torch.zeros(self.num_layers, input.size(0), self.hidden_size))
-
+            h0 = _init_hidden(
+                self.num_layers,
+                input.size(0),
+                self.hidden_size,
+                device=input.device,
+                dtype=input.dtype,
+            )
         else:
-             h0 = hx
+            h0 = hx
 
-        outs = []
-
-        hidden = list()
-        for layer in range(self.num_layers):
-            hidden.append(h0[layer, :, :])
+        hidden = [h0[layer] for layer in range(self.num_layers)]
+        outs: list[torch.Tensor] = []
 
         for t in range(input.size(1)):
-
             for layer in range(self.num_layers):
+                cell_input = input[:, t, :] if layer == 0 else hidden[layer - 1]
+                hidden[layer] = self.rnn_cell_list[layer](cell_input, hidden[layer])
+            outs.append(hidden[-1])
 
-                if layer == 0:
-                    hidden_l = self.rnn_cell_list[layer](input[:, t, :], hidden[layer])
-                else:
-                    hidden_l = self.rnn_cell_list[layer](hidden[layer - 1],hidden[layer])
-                hidden[layer] = hidden_l
-
-                hidden[layer] = hidden_l
-
-            outs.append(hidden_l)
-
-        # Take only last time step. Modify for seq to seq
-        out = outs[-1].squeeze()
-
-        out = self.fc(out)
-
-
+        out = self.fc(outs[-1].squeeze())
         return out
+
 
 class LSTM(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, bias, output_size):
-        super(LSTM, self).__init__()
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        num_layers: int,
+        bias: bool,
+        output_size: int,
+    ) -> None:
+        super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.bias = bias
         self.output_size = output_size
 
-        self.rnn_cell_list = nn.ModuleList()
+        self.rnn_cell_list = nn.ModuleList(
+            [
+                LSTMCell(
+                    input_size if layer == 0 else hidden_size,
+                    hidden_size,
+                    bias,
+                )
+                for layer in range(num_layers)
+            ]
+        )
+        self.fc = nn.Linear(hidden_size, output_size)
 
-        self.rnn_cell_list.append(LSTMCell(self.input_size,
-                                            self.hidden_size,
-                                            self.bias))
-        for l in range(1, self.num_layers):
-            self.rnn_cell_list.append(LSTMCell(self.hidden_size,
-                                                self.hidden_size,
-                                                self.bias))
-
-        self.fc = nn.Linear(self.hidden_size, self.output_size)
-
-    def forward(self, input, hx=None):
-
-        # Input of shape (batch_size, seqence length , input_size)
-        #
-        # Output of shape (batch_size, output_size)
-
+    def forward(
+        self,
+        input: torch.Tensor,
+        hx: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if hx is None:
-            if torch.cuda.is_available():
-                h0 = Variable(torch.zeros(self.num_layers, input.size(0), self.hidden_size).cuda())
-            else:
-                h0 = Variable(torch.zeros(self.num_layers, input.size(0), self.hidden_size))
+            h0 = _init_hidden(
+                self.num_layers,
+                input.size(0),
+                self.hidden_size,
+                device=input.device,
+                dtype=input.dtype,
+            )
         else:
-             h0 = hx
+            h0 = hx
 
-        outs = []
-
-        hidden = list()
-        for layer in range(self.num_layers):
-            hidden.append((h0[layer, :, :], h0[layer, :, :]))
+        hidden = [(h0[layer], h0[layer]) for layer in range(self.num_layers)]
+        outs: list[torch.Tensor] = []
 
         for t in range(input.size(1)):
-
             for layer in range(self.num_layers):
+                cell_input = input[:, t, :] if layer == 0 else hidden[layer - 1][0]
+                hidden[layer] = self.rnn_cell_list[layer](cell_input, hidden[layer])
+            outs.append(hidden[-1][0])
 
-                if layer == 0:
-                    hidden_l = self.rnn_cell_list[layer](
-                        input[:, t, :],
-                        (hidden[layer][0],hidden[layer][1])
-                        )
-                else:
-                    hidden_l = self.rnn_cell_list[layer](
-                        hidden[layer - 1][0],
-                        (hidden[layer][0], hidden[layer][1])
-                        )
-
-                hidden[layer] = hidden_l
-
-            outs.append(hidden_l[0])
-
-        out = outs[-1].squeeze()
-
-        out = self.fc(out)
-
+        out = self.fc(outs[-1].squeeze())
         return out
+
 
 class GRU(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, bias, output_size):
-        super(GRU, self).__init__()
-
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        num_layers: int,
+        bias: bool,
+        output_size: int,
+    ) -> None:
+        super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.bias = bias
         self.output_size = output_size
 
-        self.rnn_cell_list = nn.ModuleList()
+        self.rnn_cell_list = nn.ModuleList(
+            [
+                GRUCell(
+                    input_size if layer == 0 else hidden_size,
+                    hidden_size,
+                    bias,
+                )
+                for layer in range(num_layers)
+            ]
+        )
+        self.fc = nn.Linear(hidden_size, output_size)
 
-        self.rnn_cell_list.append(GRUCell(self.input_size,
-                                          self.hidden_size,
-                                          self.bias))
-        for l in range(1, self.num_layers):
-            self.rnn_cell_list.append(GRUCell(self.hidden_size,
-                                              self.hidden_size,
-                                              self.bias))
-        self.fc = nn.Linear(self.hidden_size, self.output_size)
-
-
-    def forward(self, input, hx=None):
-
-        # Input of shape (batch_size, seqence length, input_size)
-        #
-        # Output of shape (batch_size, output_size)
-
+    def forward(
+        self,
+        input: torch.Tensor,
+        hx: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         if hx is None:
-            if torch.cuda.is_available():
-                h0 = Variable(torch.zeros(self.num_layers, input.size(0), self.hidden_size).cuda())
-            else:
-                h0 = Variable(torch.zeros(self.num_layers, input.size(0), self.hidden_size))
-
+            h0 = _init_hidden(
+                self.num_layers,
+                input.size(0),
+                self.hidden_size,
+                device=input.device,
+                dtype=input.dtype,
+            )
         else:
-             h0 = hx
+            h0 = hx
 
-        outs = []
-
-        hidden = list()
-        for layer in range(self.num_layers):
-            hidden.append(h0[layer, :, :])
+        hidden = [h0[layer] for layer in range(self.num_layers)]
+        outs: list[torch.Tensor] = []
 
         for t in range(input.size(1)):
-
             for layer in range(self.num_layers):
+                cell_input = input[:, t, :] if layer == 0 else hidden[layer - 1]
+                hidden[layer] = self.rnn_cell_list[layer](cell_input, hidden[layer])
+            outs.append(hidden[-1])
 
-                if layer == 0:
-                    hidden_l = self.rnn_cell_list[layer](input[:, t, :], hidden[layer])
-                else:
-                    hidden_l = self.rnn_cell_list[layer](hidden[layer - 1],hidden[layer])
-                hidden[layer] = hidden_l
-
-                hidden[layer] = hidden_l
-
-            outs.append(hidden_l)
-
-        # Take only last time step. Modify for seq to seq
-        out = outs[-1].squeeze()
-
-        out = self.fc(out)
-
+        out = self.fc(outs[-1].squeeze())
         return out
 
+
 class BidirRecurrentModel(nn.Module):
-    def __init__(self, mode, input_size, hidden_size, num_layers, bias, output_size):
-        super(BidirRecurrentModel, self).__init__()
+    def __init__(
+        self,
+        mode: str,
+        input_size: int,
+        hidden_size: int,
+        num_layers: int,
+        bias: bool,
+        output_size: int,
+    ) -> None:
+        super().__init__()
         self.mode = mode
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -226,144 +225,90 @@ class BidirRecurrentModel(nn.Module):
         self.bias = bias
         self.output_size = output_size
 
-        self.rnn_cell_list = nn.ModuleList()
-
-        if mode == 'LSTM':
-
-            self.rnn_cell_list.append(LSTMCell(self.input_size,
-                                              self.hidden_size,
-                                              self.bias))
-            for l in range(1, self.num_layers):
-                self.rnn_cell_list.append(LSTMCell(self.hidden_size,
-                                                    self.hidden_size,
-                                                    self.bias))
-
-        elif mode == 'GRU':
-            self.rnn_cell_list.append(GRUCell(self.input_size,
-                                              self.hidden_size,
-                                              self.bias))
-            for l in range(1, self.num_layers):
-                self.rnn_cell_list.append(GRUCell(self.hidden_size,
-                                                  self.hidden_size,
-                                                  self.bias))
-
-        elif mode == 'RNN_TANH':
-            self.rnn_cell_list.append(RNNCell(self.input_size,
-                                                   self.hidden_size,
-                                                   self.bias,
-                                                   "tanh"))
-            for l in range(1, self.num_layers):
-                self.rnn_cell_list.append(RNNCell(self.hidden_size,
-                                                       self.hidden_size,
-                                                       self.bias,
-                                                       "tanh"))
-
-        elif mode == 'RNN_RELU':
-            self.rnn_cell_list.append(RNNCell(self.input_size,
-                                                   self.hidden_size,
-                                                   self.bias,
-                                                   "relu"))
-            for l in range(1, self.num_layers):
-                self.rnn_cell_list.append(RNNCell(self.hidden_size,
-                                                   self.hidden_size,
-                                                   self.bias,
-                                                   "relu"))
-        else:
+        if mode not in {"LSTM", "GRU", "RNN_TANH", "RNN_RELU"}:
             raise ValueError("Invalid RNN mode selected.")
 
-        self.fc = nn.Linear(self.hidden_size * 2, self.output_size)
+        self.rnn_cell_list = nn.ModuleList(
+            [
+                _make_cell(
+                    mode,
+                    input_size if layer == 0 else hidden_size,
+                    hidden_size,
+                    bias,
+                )
+                for layer in range(num_layers)
+            ]
+        )
+        self.fc = nn.Linear(hidden_size * 2, output_size)
 
-    def forward(self, input, hx=None):
+    def forward(self, input: torch.Tensor, hx: torch.Tensor | None = None) -> torch.Tensor:
+        h0 = _init_hidden(
+            self.num_layers,
+            input.size(0),
+            self.hidden_size,
+            device=input.device,
+            dtype=input.dtype,
+        )
 
-        # Input of shape (batch_size, sequence length, input_size)
-        #
-        # Output of shape (batch_size, output_size)
-
-        if torch.cuda.is_available():
-            h0 = Variable(torch.zeros(self.num_layers, input.size(0), self.hidden_size).cuda())
+        if self.mode == "LSTM":
+            hidden_forward = [(h0[layer], h0[layer]) for layer in range(self.num_layers)]
+            hidden_backward = [(h0[layer], h0[layer]) for layer in range(self.num_layers)]
         else:
-            h0 = Variable(torch.zeros(self.num_layers, input.size(0), self.hidden_size))
+            hidden_forward = [h0[layer] for layer in range(self.num_layers)]
+            hidden_backward = [h0[layer] for layer in range(self.num_layers)]
 
-        if torch.cuda.is_available():
-            hT = Variable(torch.zeros(self.num_layers, input.size(0), self.hidden_size).cuda())
-        else:
-            hT = Variable(torch.zeros(self.num_layers, input.size(0), self.hidden_size))
-
-        outs = []
-        outs_rev = []
-
-        hidden_forward = list()
-        for layer in range(self.num_layers):
-            if self.mode == 'LSTM':
-                hidden_forward.append((h0[layer, :, :], h0[layer, :, :]))
-            else:
-                hidden_forward.append(h0[layer, :, :])
-
-        hidden_backward = list()
-        for layer in range(self.num_layers):
-            if self.mode == 'LSTM':
-                hidden_backward.append((hT[layer, :, :], hT[layer, :, :]))
-            else:
-                hidden_backward.append(hT[layer, :, :])
+        outs: list[torch.Tensor] = []
+        outs_rev: list[torch.Tensor] = []
 
         for t in range(input.shape[1]):
             for layer in range(self.num_layers):
-
-                if self.mode == 'LSTM':
-                    # If LSTM
+                if self.mode == "LSTM":
                     if layer == 0:
-                        # Forward net
                         h_forward_l = self.rnn_cell_list[layer](
                             input[:, t, :],
-                            (hidden_forward[layer][0], hidden_forward[layer][1])
-                            )
-                        # Backward net
+                            hidden_forward[layer],
+                        )
                         h_back_l = self.rnn_cell_list[layer](
                             input[:, -(t + 1), :],
-                            (hidden_backward[layer][0], hidden_backward[layer][1])
-                            )
+                            hidden_backward[layer],
+                        )
                     else:
-                        # Forward net
                         h_forward_l = self.rnn_cell_list[layer](
                             hidden_forward[layer - 1][0],
-                            (hidden_forward[layer][0], hidden_forward[layer][1])
-                            )
-                        # Backward net
+                            hidden_forward[layer],
+                        )
                         h_back_l = self.rnn_cell_list[layer](
                             hidden_backward[layer - 1][0],
-                            (hidden_backward[layer][0], hidden_backward[layer][1])
-                            )
-
+                            hidden_backward[layer],
+                        )
+                elif layer == 0:
+                    h_forward_l = self.rnn_cell_list[layer](
+                        input[:, t, :],
+                        hidden_forward[layer],
+                    )
+                    h_back_l = self.rnn_cell_list[layer](
+                        input[:, -(t + 1), :],
+                        hidden_backward[layer],
+                    )
                 else:
-                    # If RNN{_TANH/_RELU} / GRU
-                    if layer == 0:
-                        # Forward net
-                        h_forward_l = self.rnn_cell_list[layer](input[:, t, :], hidden_forward[layer])
-                        # Backward net
-                        h_back_l = self.rnn_cell_list[layer](input[:, -(t + 1), :], hidden_backward[layer])
-                    else:
-                        # Forward net
-                        h_forward_l = self.rnn_cell_list[layer](hidden_forward[layer - 1], hidden_forward[layer])
-                        # Backward net
-                        h_back_l = self.rnn_cell_list[layer](hidden_backward[layer - 1], hidden_backward[layer])
-
+                    h_forward_l = self.rnn_cell_list[layer](
+                        hidden_forward[layer - 1],
+                        hidden_forward[layer],
+                    )
+                    h_back_l = self.rnn_cell_list[layer](
+                        hidden_backward[layer - 1],
+                        hidden_backward[layer],
+                    )
 
                 hidden_forward[layer] = h_forward_l
                 hidden_backward[layer] = h_back_l
 
-            if self.mode == 'LSTM':
-
+            if self.mode == "LSTM":
                 outs.append(h_forward_l[0])
                 outs_rev.append(h_back_l[0])
-
             else:
                 outs.append(h_forward_l)
                 outs_rev.append(h_back_l)
 
-        # Take only last time step. Modify for seq to seq
-        out = outs[-1].squeeze()
-        out_rev = outs_rev[0].squeeze()
-        out = torch.cat((out, out_rev), 1)
-
-        out = self.fc(out)
-        return out
+        out = torch.cat((outs[-1].squeeze(), outs_rev[0].squeeze()), dim=1)
+        return self.fc(out)
